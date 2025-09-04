@@ -1,6 +1,41 @@
 # Copyright 2018 Bimghi Choi. All Rights Reserved.
+#
+# upgraded from v3.0
+#  - base date : today's close --> next day's open
+#  - RRL input : target prices --> difference between target and base prices
+#  - include RRL : optional
+#
+# this program  is a test for many-to-many (PTB)
+#     -- # of steps  ----  --- # of steps  ----
+#   b ----------------------------------------------------------
+#   a -                  -                    -
+#   t - the first batch  -   the second batch -
+#   c -                  -                    -
+#   h -----------------------------------------------------------
+
+# but in DeepMoney,
+#    -- # of steps  in first batch -----
+#   00-00-01 ---------------------------
+#   00-00-02 -                         -
+#   00-00-03 - the first batch         -
+#   00-00-04 -                  -
+#   00-00-05 ---------------------------
+#   --- # of steps  in second batch ----
+#   00-00-02 ---------------------------
+#   00-00-03 -                         -
+#   00-00-04 - the second batch         -
+#   00-00-05 -                         -
+#   00-00-06 ---------------------------
 # ==============================================================================
-"""Utilities for read and parsing s&p500 text files."""
+
+# to eliminate a term[x, y] from training
+#
+# train_start1 = the first date of data
+# train_start2 = y + 1
+# train_end1 = x - 1
+# train_end2 = test_start - extra days for elimination
+
+"""Utilities for parsing PTB text files."""
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -11,43 +46,99 @@ import os
 import tensorflow as tf
 import numpy as np
 import pandas as pd
-import numpy as np
-import random as rd
-from PIL import Image
-from sklearn.preprocessing import StandardScaler as StandardScaler
+import statistics as stat
+import path as path
+from statistics import stdev
 
-def read_image_file(config, data_path=None):
+def norm_data(config):
   """
-  in given directory, read all files, convert them to a normalize dataset
+  read normalized data
 
-  :param config: a configuration object
-  :param data_path: not used
-  :return: tuple (train_data, valid_data, test_data)
-    where each of the data objects can be passed to producer function.
-  """
-
-  inputs = []
-  for root, directory, files in os.walk('image_files'):
-      for fname in files:
-        im = Image.open(root + "/" + fname)
-        imGray_sacle = im.convert('L') # 흑백으로 전환
-        im_arr = np.array(imGray_sacle)
-        inputs.append(np.reshape(im_arr, [-1])/255)
-
-  features = np.reshape(inputs, [-1, len(inputs[0])])
-
-  # read label file, make labels
-  labels = []
-
-  return features, labels
-
-def read_file(config, data_path=None):
-  """Load PTB raw data from data directory "data_path".
-
-  kospi200 futures 65days-forward  predictions text files with 35 input features,
+  kospi200 futures 5, 20, 65days-forward  predictions text files with 943 input features,
   and performs mini-batching of the inputs.
 
   Args:
+    config : configuration class
+    data_path: not use
+
+  Returns:
+    tuple (train_data, valid_data, test_data)
+    where each of the data objects can be passed to producer function.
+  """
+  # if norm_days > 0, read raw data directory and normalize with norm days
+  if (config.norm_days > 0): return raw_data(config)
+
+  raw_df = pd.read_csv(path.file_name, encoding="ISO-8859-1")
+  #raw_df = raw_df[:-config.predict_term]
+
+  # start : the predicted date,  start_index : the date to try to predict
+  test_start_index = len(raw_df[raw_df['date'] <= config.test_start]) - 1 - config.predict_term
+  test_end_index = len(raw_df[raw_df['date'] <= config.test_end]) - 1 - config.predict_term
+
+  train_start1_index = len(raw_df[raw_df['date'] <= config.train_start1]) - 1 - config.predict_term
+  train_end1_index = len(raw_df[raw_df['date'] <= config.train_end1]) - 1 - config.predict_term
+
+  train_start2_index = len(raw_df[raw_df['date'] <= config.train_start2]) - 1 - config.predict_term
+  train_end2_index = len(raw_df[raw_df['date'] <= config.train_end2]) - 1 - config.predict_term
+
+  input_target_list = list(range(1, 1 + (config.input_size + 1)))
+
+  #create train input data 1
+  train_data1 = raw_df.values[max(0, train_start1_index - config.step_interval*(config.num_steps - 1) - config.predict_term): train_end1_index  + 1 - config.predict_term, input_target_list]
+
+  #train target data created
+  train_target_raw = raw_df.values[max(0, train_start1_index - config.step_interval*(config.num_steps - 1) - config.predict_term): train_end1_index + 1, config.input_size+1]
+
+  train_target = []
+  for i in range(len(train_target_raw)-config.predict_term):
+    train_target.append(train_target_raw[i+config.predict_term])
+
+  #input + target train data created
+  train_target = np.reshape(train_target, (-1, 1))
+  train_data1 = np.concatenate((train_data1, train_target), axis=1)
+
+  #create train input data 2
+  train_data2 = raw_df.values[max(0, train_start2_index - config.step_interval*(config.num_steps - 1) - config.predict_term) : train_end2_index + 1 - config.predict_term, input_target_list]
+
+  #train target data created
+  train_target_raw = raw_df.values[max(0, train_start2_index - config.step_interval*(config.num_steps - 1) - config.predict_term): train_end2_index + 1, config.input_size+1]
+
+  train_target = []
+  for i in range(len(train_target_raw)-config.predict_term):
+    train_target.append(train_target_raw[i+config.predict_term])
+
+  #input + target train data created
+  train_target = np.reshape(train_target, (-1, 1))
+  train_data2 = np.concatenate((train_data2, train_target), axis=1)
+
+  #test data
+  if test_start_index > 0 and test_start_index < test_end_index: test_data = raw_df.values[test_start_index - config.step_interval * (config.num_steps-1) : test_end_index + 1, input_target_list]
+  else: test_data = []
+
+  #test target data created
+  if test_start_index > 0 and test_start_index < test_end_index:
+    test_target_raw = raw_df.values[test_start_index - config.step_interval * (config.num_steps-1): test_end_index + 1 + config.predict_term, config.input_size+1]
+    test_target = []
+    for i in range(len(test_target_raw)-config.predict_term):
+      test_target.append(test_target_raw[i + config.predict_term])
+    #input + target test data created
+    test_target = np.reshape(test_target, (-1, 1))
+    test_data = np.concatenate((test_data, test_target), axis=1)
+  else: test_data = []
+
+  predict_data = test_data
+
+  return train_data1, train_data2, test_data, predict_data, test_start_index
+
+def raw_data(config):
+  """
+  read non-normlized data, adnd return normalized dataset
+
+  kospi200 futures 5, 20, 65days-forward  predictions text files with 943 input features,
+  and performs mini-batching of the inputs.
+
+  Args:
+    config : configuration class
     data_path: not use
 
   Returns:
@@ -55,106 +146,179 @@ def read_file(config, data_path=None):
     where each of the data objects can be passed to producer function.
   """
 
-  #read data file, and make dataframe
-  raw_df = pd.read_csv("raw_data_" + config.file_name + ".csv", encoding="ISO-8859-1")
-  df = normalize(raw_df.values[:, 1:config.input_size+1])
+  raw_df = pd.read_csv(path.market + "_raw.csv", encoding="ISO-8859-1")
+  #raw_df = raw_df[:-config.predict_term]
 
-  #calculate the index for test_start_date
-  test_start_index = len(raw_df[raw_df['date'] <= config.test_start]) - 1 - config.far_predict
-  test_end_index = len(raw_df[raw_df['date'] < config.test_end]) - 1 - config.far_predict
+  # column 0: date, if 20days normalization, normalization start at index 19
+  test_start_index = len(raw_df[raw_df['date'] <= config.test_start]) - (config.norm_days-1) - config.predict_term - 1
+  test_end_index = len(raw_df[raw_df['date'] < config.test_end]) - (config.norm_days-1) - config.predict_term - 1
 
-  input_target_list = list(range(1, config.input_size))
+  normXY = make_norm(raw_df.values[:, 1:],  config.conversion, config.predict_term, config.input_size, config.norm_days)
+  #normXY = normXY[:-config.predict_term]
 
-  #train input 데이터 생성
-  train_data =  df[0: test_start_index - config.far_predict, :config.input_size]
-  # train target data created
-  train_target_raw = raw_df.values[0: test_start_index, config.input_size + 1]
-  train_target = []
-  for i in range(len(train_target_raw) - config.far_predict):
-    if train_target_raw[i + config.far_predict] - train_target_raw[i] > 0: train_target.append(1)
-    else: train_target.append(0)
-  # input + target train data created
-  train_target = np.reshape(train_target, (-1, 1))
-  train_data = np.concatenate((train_data, train_target), axis=1)
-
-  # test data 생성
-  test_data = df[test_start_index - config.step_interval * (config.num_steps - 1): test_end_index + 1, :config.input_size]
-
-  # test target data created
-  test_target_raw = raw_df.values[test_start_index - config.step_interval * (config.num_steps - 1): test_end_index + 1 + config.far_predict, config.input_size + 1]
-  test_target = []
-  for i in range(len(test_target_raw) - config.far_predict):
-    if test_target_raw[i + config.far_predict] - test_target_raw[i] > 0: test_target.append(1)
-    else: test_target.append(0)
-  # input + target test data created
-  test_target = np.reshape(test_target, (-1, 1))
-  test_data = np.concatenate((test_data, test_target), axis=1)
-
+  train_data = normXY[:test_start_index - config.predict_term, :]
+  test_data = normXY[test_start_index - config.step_interval * (config.num_steps-1) : test_end_index + 1, :]
   predict_data = test_data
 
-  #test 시도일 및 지수, test 목표일
-  today = raw_df.values[test_start_index:test_end_index + 1, 0] # date 0번 column
-  today_index = raw_df.values[test_start_index:test_end_index + 1, config.input_size+1] # 종가 지수
-  target_date = raw_df.values[test_start_index + config.far_predict:test_end_index + config.far_predict + 1, 0] # row(target_date) = row(today_index) + far_predict
+  return train_data, test_data, predict_data, test_start_index
 
-  return train_data, test_data, predict_data, today, today_index, target_date
+def make_index_date(test_data,config):
 
+  test_data_size = len(test_data) - config.step_interval * (config.num_steps-1)
 
-def producer(raw_data, input_size, output_size, far_predict, interval, steps, name=None):
+  index_df = pd.read_csv(path.file_name, encoding = "ISO-8859-1")
+  test_start_index = len(index_df[index_df['date'] <= config.test_start]) - 1 - config.predict_term
+
+  # base date list
+  z = index_df.values[test_start_index: test_start_index + test_data_size, 0]
+  z = list(z)
+
+  # index list at base date = today's close prices
+  index_close = list(index_df.values[test_start_index: test_start_index + test_data_size, config.input_size + 1])
+
+  # index list at base date = next day's open prices
+  index_open = list(index_df.values[test_start_index + 1: test_start_index + test_data_size + 1, config.input_size + 2])
+
+  # predicted date list
+  #date = index_df.values[test_start_index + config.predict_term: test_start_index +  config.predict_term + test_data_size, 0]
+  # eliminate weekend: if predict_term is 65, 65/5 = 13weeks, 13weeks * 7 = 91(3months)
+  #date = []
+  #for k in range(0, len(z)):
+  #  basedate = z[k]
+  #  for_date = pd.date_range(start=basedate, periods=config.predict_term / 5 * 7 + 1, freq='D')[int(config.predict_term / 5 * 7)]
+  #  for_date = for_date.strftime("%Y-%m-%d")
+  #  date.append(for_date)
+
+  date = list(index_df.values[test_start_index + config.predict_term: test_start_index + test_data_size + config.predict_term, 0])
+
+  #standard deviation
+  std = []
+  for k in range(0, len(date)):
+    idx = len(index_df[index_df['date'] <= date[k]])-1
+    std.append(stdev(index_df.values[idx - config.predict_term:idx + 1, config.input_size + 1]))
+
+  #std = index_df.values[test_start_index + config.predict_term: test_start_index +  config.predict_term + test_data_size, 7]
+
+  return index_close, index_open, date, z, std
+
+def producer(raw_data, num_steps, step_interval, input_size, output_size):
   """produce time-series data.
 
-  This chunks up raw_data into batches of examples and returns Tensors that
-  are drawn from these batches.
+  This chunks up raw_data into series of examples and returns Tensors that
+  are drawn from these series.
 
   Args:
-    raw_data: one of the raw data with 5, 20, 65-after futures data.
-    far_predict : the predict term. (5, 20, 65)
-    interval : the interval between steps
-    steps : the number of serial steps for input data
+    raw_data: one of the raw data outputs from futures data.
+    num_steps: int, the number of unrolls.
+    step_interval : days between steps
     name: the name of this operation (optional).
 
   Returns:
-    A pair of Tensors, each shaped [batch_size, input_size * steps]. The second element
-    of the tuple is the target data(5, 20, 65days-forward  values).
+    A pair of Tensors, each shaped [batch_size, num_steps]. The second element
+    of the tuple is base index values and the target index(n days-forward kospi200 futures values).
 
   Raises:
     tf.errors.InvalidArgumentError: if batch_size or num_steps are too high.
   """
 
-  #input = np.reshape(raw_data[:, 1:input_size + 1], [-1, input_size]) #date column 제거
-  #target = np.reshape(raw_data[:, input_size + 1], [-1])
-
-  # input data만 normalize
-  #norm_df = normalize(input)
-
-  # input과 target 분리하여 반환
+  # split input and target, return
   dataX, dataY = [], []
 
-  # training data size 계산
-  size = len(raw_data)  - interval * (steps - 1)
+  # calc the number of time series data
+  size = len(raw_data) - (num_steps-1) * step_interval
 
   for i in range(size):
-    input_list = list(range(i, i + steps * interval, interval)) # i, i + j, i + 2j, . . . , i + (k-1)j
-    a = np.reshape(raw_data[input_list, :input_size], [steps*input_size])
+    input_list = list(range(i, i + num_steps * step_interval, step_interval))
+    a = np.float32(raw_data[input_list, :input_size + 2])
     dataX.append(a)
-
-    b = np.reshape(raw_data[i + interval * (steps - 1), input_size], [1]) # the target value at the last date of serial input
+    b = np.float32(raw_data[input_list, input_size: input_size + 2])
     dataY.append(b)
 
-  x = np.array(dataX).reshape(-1, steps*input_size)
-  y = np.array(dataY).reshape(-1)
-
+  # --> 3-D array dimension
+  x = np.array(dataX).reshape(-1, num_steps, input_size + 2)
+  y = np.array(dataY).reshape(-1, num_steps, 2)
 
   return x, y
 
-def normalize(df):
-  # normalize df, (df.mean())/ standard deviation
-  normal_proc = StandardScaler().fit(df)
-  transformed_df = normal_proc.transform(df)
-  return transformed_df
+def raw_target_producer(config):
+  """produce time series data of real target index
+  """
+  raw_df = pd.read_csv(path.file_name, encoding="ISO-8859-1")
 
-def denormalize(df):
-  # denormalize the normalized data back to the original
-  normal_proc = StandardScaler().fit(df)
-  inverse_trans_df = normal_proc.inverse_transform(df)
-  return inverse_trans_df
+  # start : the predicted date,  start_index : the date to try to predict
+  test_start_index = len(raw_df[raw_df['date'] <= config.test_start]) - 1 - config.predict_term
+  test_end_index = len(raw_df[raw_df['date'] <= config.test_end]) - 1 - config.predict_term
+
+  if test_start_index > 0 and test_start_index < test_end_index:
+    raw_data = raw_df.values[test_start_index - config.step_interval * (config.num_steps-1): test_end_index + 1 + config.predict_term, config.input_size+1]
+
+  # split input and target, return
+  dataX = []
+  dataY = []
+
+  # calc the number of time series data
+  size = len(raw_data) - (config.num_steps-1) * config.step_interval
+
+  for i in range(size):
+    input_list = list(range(i, i + config.num_steps * config.step_interval, config.step_interval))
+    a = np.float32(raw_data[input_list, 0])
+    dataX.append(a)
+
+    input_list = list(range(i + config.predict_term, i + config.num_steps * config.step_interval + config.predict_term, config.step_interval))
+    b = np.float32(raw_data[input_list, 0])
+    dataY.append(b)
+
+  # --> 3-D array dimension
+  x = np.array(dataX).reshape(-1, config.num_steps, config.output_size)
+  y = np.array(dataY).reshape(-1, config.num_steps, config.output_size)
+
+  return x, y
+
+def make_norm(raw_data, conversion, predict_term, input_size, days):
+  norm_data = []
+  for i in range(days-1, raw_data.shape[0]):
+    r = []
+    for j in range(input_size):
+      data_norm = raw_data[i - (days-1):i + 1, j]
+      std_norm = stat.stdev(data_norm)
+      if std_norm != 0:
+        c = np.float64((raw_data[i, j] - sum(data_norm) / days) / std_norm)
+      else:
+        c = 0
+      if not (abs(c) < 4.3): c = 0
+      r.append(c)
+    if i + predict_term < raw_data.shape[0]:
+      if conversion == 'diff':
+        r.append(raw_data[i + predict_term, input_size] - raw_data[i, input_size])
+      if conversion == 'rate':
+        r.append((raw_data[i + predict_term, input_size] - raw_data[i, input_size]) / raw_data[i, input_size] * 100)
+      if conversion == 'norm': r.append((raw_data[i + predict_term, input_size] - 67) / 30)
+    else: r.append(0)
+    norm_data.append(r)
+  return np.reshape(norm_data, [-1, input_size+1])
+
+def get_test_target(config):
+  raw_df = pd.read_csv(path.file_name, encoding="ISO-8859-1")
+
+  # start : the predicted date,  start_index : the date to try to predict
+  test_start_index = len(raw_df[raw_df['date'] <= config.test_start]) - 1 - config.predict_term
+  test_end_index = len(raw_df[raw_df['date'] <= config.test_end]) - 1 - config.predict_term
+
+  input_target_list = list(range(1, 1 + (config.input_size + 1)))
+
+  #test data
+  if test_start_index > 0 and test_start_index < test_end_index: test_data = raw_df.values[test_start_index - config.step_interval * (config.num_steps-1) : test_end_index + 1, config.input_size  + 1]
+  else: test_data = []
+
+  #test target data created
+  if test_start_index > 0 and test_start_index < test_end_index:
+    test_target_raw = raw_df.values[test_start_index - config.step_interval * (config.num_steps-1): test_end_index + 1 + config.predict_term, config.input_size+1]
+    test_target = []
+    for i in range(len(test_target_raw)-config.predict_term):
+      test_target.append(test_target_raw[i + config.predict_term])
+    #input + target test data created
+    test_target = np.reshape(test_target, (-1, 1))
+    test_data = np.concatenate((test_data, test_target), axis=1)
+  else: test_data = []
+
+  return test_data
