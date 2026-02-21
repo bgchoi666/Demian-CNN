@@ -891,7 +891,7 @@ config = tf.ConfigProto(gpu_options=gpu_options)
 ## 라이선스 및 연락처
 
 ### 라이선스
-Copyright 2018 Shinhan Financial Group / Bumghi Choi. All Rights Reserved.
+Copyright 2018 Bumghi Choi. All Rights Reserved.
 
 ### 참고 문헌
 - TensorFlow 공식 문서
@@ -914,6 +914,11 @@ Copyright 2018 Shinhan Financial Group / Bumghi Choi. All Rights Reserved.
 - 동적 레이어 조정
 - 멀티스레딩 지원
 - 성능 최적화
+
+### refactored (개선 사항)
+- 코드 정리
+- tensorflow 최신 버젼
+- python 최신 버젼
 
 ---
 
